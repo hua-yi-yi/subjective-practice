@@ -19,6 +19,7 @@ import android.os.Looper;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -52,6 +53,7 @@ public final class MainActivity extends Activity {
     private static final String DEFAULT_WATERMARK = "本地练习";
     private static final int DEFAULT_MINUTES = 60;
     private static final int MAX_MINUTES = 240;
+    private static final int NEW_QUESTION = -1;
     private static final long MILLIS_PER_MINUTE = 60_000L;
     private static final String EXAMPLE = "解释 <p>{{ msg }}</p> 的作用。";
 
@@ -62,10 +64,14 @@ public final class MainActivity extends Activity {
     private String watermark = DEFAULT_WATERMARK;
     private int currentIndex;
     private boolean bindingAnswer;
-    private boolean addingQuestion;
+    private boolean inPractice;
+    private int editingIndex;
     private int durationMinutes;
     private long countdownEnd;
 
+    private TextView preparationCount;
+    private LinearLayout preparationQuestions;
+    private Button beginButton;
     private WatermarkLayout workspace;
     private ScrollView pageScroll;
     private TextView answerStatus;
@@ -90,15 +96,16 @@ public final class MainActivity extends Activity {
         }
         preferences = getSharedPreferences("practice", MODE_PRIVATE);
         durationMinutes = preferences.getInt("countdown_minutes", DEFAULT_MINUTES);
-        countdownEnd = preferences.getLong("countdown_end", 0);
-        if (countdownEnd == 0) {
-            startCountdown(durationMinutes);
-        }
+        countdownEnd = preferences.getLong("practice_deadline", 0);
         restorePaper();
-        setContentView(createPage());
-        showQuestion();
+        if (countdownEnd > 0 && !questions.isEmpty()
+                && preferences.getBoolean("resume_practice", false)) {
+            openPracticePage();
+        } else {
+            openPreparationPage();
+        }
         if (state != null && state.containsKey("draft_prompt")) {
-            openEditor(state.getBoolean("draft_adding"), state.getString("draft_prompt"),
+            openEditor(state.getInt("draft_index", NEW_QUESTION), state.getString("draft_prompt"),
                     state.getString("draft_watermark"));
         }
     }
@@ -116,13 +123,115 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    public void onBackPressed() {
+        if (inPractice) {
+            openPreparationPage();
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    @Override
     protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
         if (editor != null && editor.isShowing()) {
-            state.putBoolean("draft_adding", addingQuestion);
+            state.putInt("draft_index", editingIndex);
             state.putString("draft_prompt", promptDraft.getText().toString());
             state.putString("draft_watermark", watermarkDraft.getText().toString());
         }
+    }
+
+    private void openPreparationPage() {
+        dismissAnswerKeyboard();
+        inPractice = false;
+        clockHandler.removeCallbacks(clockTick);
+        preferences.edit().putBoolean("resume_practice", false).apply();
+
+        LinearLayout page = column();
+        page.setBackgroundColor(WHITE);
+        TextView title = label("题目设置", 23, INK, true);
+        title.setPadding(dp(20), dp(20), dp(20), dp(8));
+        markHeading(title);
+        append(page, title, 0);
+
+        LinearLayout controls = row();
+        controls.setPadding(dp(20), 0, dp(8), 0);
+        preparationCount = label("", 14, MUTED, false);
+        controls.addView(preparationCount, new LinearLayout.LayoutParams(0, WRAP, 1));
+        Button addQuestion = action("新增题目", PRIMARY, Color.TRANSPARENT);
+        addQuestion.setOnClickListener(view -> openEditor(NEW_QUESTION));
+        controls.addView(addQuestion, new LinearLayout.LayoutParams(WRAP, WRAP));
+        append(page, controls, 0);
+        addDivider(page);
+
+        ScrollView questionsScroll = new ScrollView(this);
+        preparationQuestions = column();
+        preparationQuestions.setPadding(dp(20), 0, dp(12), 0);
+        questionsScroll.addView(preparationQuestions);
+        page.addView(questionsScroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
+
+        addDivider(page);
+        LinearLayout footer = column();
+        footer.setPadding(dp(16), dp(10), dp(16), dp(10));
+        beginButton = action("", WHITE, PRIMARY_FILL);
+        beginButton.setOnClickListener(view -> beginPractice());
+        append(footer, beginButton, 0);
+        append(page, footer, 0);
+        setContentView(page);
+        refreshPreparation();
+    }
+
+    private void refreshPreparation() {
+        preparationCount.setText("共 " + questions.size() + " 道简答题");
+        beginButton.setText(countdownEnd == 0 ? "开始答题" : "继续答题");
+        beginButton.setEnabled(!questions.isEmpty());
+        beginButton.setAlpha(questions.isEmpty() ? 0.45f : 1f);
+        preparationQuestions.removeAllViews();
+        if (questions.isEmpty()) {
+            TextView empty = label("先新增一道题，再开始答题。", 15, MUTED, false);
+            append(preparationQuestions, empty, 20);
+            return;
+        }
+
+        for (int index = 0; index < questions.size(); index++) {
+            int questionIndex = index;
+            LinearLayout questionRow = row();
+            questionRow.setPadding(0, dp(12), 0, dp(12));
+            LinearLayout summary = column();
+            append(summary, label("第 " + (index + 1) + " 题", 13, MUTED, false), 0);
+            TextView preview = label(questions.get(index).prompt, 16, INK, false);
+            preview.setMaxLines(2);
+            preview.setEllipsize(TextUtils.TruncateAt.END);
+            append(summary, preview, 4);
+            questionRow.addView(summary, new LinearLayout.LayoutParams(0, WRAP, 1));
+
+            Button edit = action("编辑", PRIMARY, Color.TRANSPARENT);
+            edit.setContentDescription("编辑第 " + (index + 1) + " 题");
+            edit.setOnClickListener(view -> openEditor(questionIndex));
+            questionRow.addView(edit, new LinearLayout.LayoutParams(WRAP, WRAP));
+            append(preparationQuestions, questionRow, 0);
+            addDivider(preparationQuestions);
+        }
+    }
+
+    private void beginPractice() {
+        if (questions.isEmpty()) {
+            return;
+        }
+        if (countdownEnd == 0) {
+            currentIndex = 0;
+            savePaper();
+            startCountdown(durationMinutes);
+        }
+        openPracticePage();
+    }
+
+    private void openPracticePage() {
+        inPractice = true;
+        preferences.edit().putBoolean("resume_practice", true).apply();
+        setContentView(createPage());
+        showQuestion();
+        updateClock();
     }
 
     private View createPage() {
@@ -209,14 +318,14 @@ public final class MainActivity extends Activity {
         Button back = action("‹", INK, Color.TRANSPARENT);
         back.setTextSize(27);
         back.setTypeface(Typeface.DEFAULT);
-        back.setContentDescription("返回");
-        back.setOnClickListener(view -> finish());
+        back.setContentDescription("返回题目设置");
+        back.setOnClickListener(view -> openPreparationPage());
         header.addView(back, new FrameLayout.LayoutParams(WRAP, WRAP,
                 Gravity.START | Gravity.CENTER_VERTICAL));
 
         Button edit = action("编辑题目", PRIMARY, Color.TRANSPARENT);
         edit.setTextSize(13);
-        edit.setOnClickListener(view -> openEditor(false, question().prompt, watermark));
+        edit.setOnClickListener(view -> openEditor(currentIndex));
         FrameLayout.LayoutParams editPosition =
                 new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.END | Gravity.CENTER_VERTICAL);
         editPosition.setMarginEnd(dp(4));
@@ -318,11 +427,14 @@ public final class MainActivity extends Activity {
         durationMinutes = minutes;
         countdownEnd = System.currentTimeMillis() + minutes * MILLIS_PER_MINUTE;
         preferences.edit().putInt("countdown_minutes", minutes)
-                .putLong("countdown_end", countdownEnd).apply();
+                .putLong("practice_deadline", countdownEnd).apply();
     }
 
     private void updateClock() {
         clockHandler.removeCallbacks(clockTick);
+        if (!inPractice) {
+            return;
+        }
         long millis = Math.max(0, countdownEnd - System.currentTimeMillis());
         long seconds = (millis + 999) / 1000;
         String time = String.format(Locale.ROOT, "%02d:%02d", seconds / 60, seconds % 60);
@@ -386,7 +498,7 @@ public final class MainActivity extends Activity {
     }
 
     private void dismissAnswerKeyboard() {
-        if (answer.hasFocus()) {
+        if (inPractice && answer.hasFocus()) {
             getSystemService(InputMethodManager.class).hideSoftInputFromWindow(answer.getWindowToken(), 0);
             answer.clearFocus();
         }
@@ -405,14 +517,19 @@ public final class MainActivity extends Activity {
                     dialog.dismiss();
                     goTo(index);
                 })
-                .setNeutralButton("新增题目", (dialog, which) -> openEditor(true, "", watermark))
+                .setNeutralButton("新增题目", (dialog, which) -> openEditor(NEW_QUESTION))
                 .setNegativeButton("关闭", null)
                 .show();
     }
 
-    private void openEditor(boolean adding, String initialPrompt, String initialWatermark) {
+    private void openEditor(int index) {
+        String initialPrompt = index == NEW_QUESTION ? "" : questions.get(index).prompt;
+        openEditor(index, initialPrompt, watermark);
+    }
+
+    private void openEditor(int index, String initialPrompt, String initialWatermark) {
         dismissAnswerKeyboard();
-        addingQuestion = adding;
+        editingIndex = index;
 
         LinearLayout form = column();
         form.setPadding(dp(24), dp(12), dp(24), dp(8));
@@ -439,11 +556,11 @@ public final class MainActivity extends Activity {
         formScroll.addView(form);
         formScroll.requestFocus();
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle(adding ? "新增题目" : "编辑题目")
+                .setTitle(index == NEW_QUESTION ? "新增题目" : "编辑题目")
                 .setView(formScroll)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("保存", null);
-        boolean canDelete = !adding && questions.size() > 1;
+        boolean canDelete = index != NEW_QUESTION && (!inPractice || questions.size() > 1);
         if (canDelete) {
             builder.setNeutralButton("删除本题", null);
         }
@@ -464,31 +581,49 @@ public final class MainActivity extends Activity {
             promptDraft.setError("请输入题干");
             return;
         }
-        if (addingQuestion) {
+        if (editingIndex == NEW_QUESTION) {
             questions.add(new Question(value, ""));
-            currentIndex = questions.size() - 1;
+            if (inPractice) {
+                currentIndex = questions.size() - 1;
+            }
         } else {
-            question().prompt = value;
+            questions.get(editingIndex).prompt = value;
         }
         watermark = watermarkDraft.getText().toString().trim();
         savePaper();
         editor.dismiss();
-        showQuestion();
+        refreshAfterEdit();
     }
 
     private void confirmDelete() {
+        int index = editingIndex;
         new AlertDialog.Builder(this)
-                .setTitle("删除第 " + (currentIndex + 1) + " 题？")
+                .setTitle("删除第 " + (index + 1) + " 题？")
                 .setMessage("题干和该题的作答内容会一起删除。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", (dialog, which) -> {
-                    questions.remove(currentIndex);
-                    currentIndex = Math.min(currentIndex, questions.size() - 1);
+                    questions.remove(index);
+                    if (index < currentIndex) {
+                        currentIndex--;
+                    }
+                    currentIndex = Math.max(0, Math.min(currentIndex, questions.size() - 1));
+                    if (questions.isEmpty()) {
+                        countdownEnd = 0;
+                        preferences.edit().remove("practice_deadline").apply();
+                    }
                     savePaper();
                     editor.dismiss();
-                    showQuestion();
+                    refreshAfterEdit();
                 })
                 .show();
+    }
+
+    private void refreshAfterEdit() {
+        if (inPractice) {
+            showQuestion();
+        } else {
+            refreshPreparation();
+        }
     }
 
     private void restorePaper() {
@@ -503,14 +638,12 @@ public final class MainActivity extends Activity {
                 }
                 watermark = paper.optString("watermark", DEFAULT_WATERMARK);
                 currentIndex = Math.max(0, Math.min(paper.optInt("current"), questions.size() - 1));
+                return;
             } catch (JSONException malformedPaper) {
                 questions.clear();
             }
         }
-        if (questions.isEmpty()) {
-            questions.add(new Question(EXAMPLE, ""));
-            currentIndex = 0;
-        }
+        questions.add(new Question(EXAMPLE, ""));
     }
 
     private void savePaper() {

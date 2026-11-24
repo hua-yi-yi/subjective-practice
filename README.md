@@ -2,6 +2,10 @@
 
 离线 Android 主观题练习 App，支持编辑题干、文字作答、答题卡、本地倒计时和自定义水印。题目中的 Vue 标签与插值语法按纯文本显示。题目和答案保存在设备上。
 
+## 提前设置题目
+
+在「题目设置」页新增、编辑或删除简答题。点「开始答题」后启动倒计时。作答时可点左上角返回题目设置，再点「继续答题」回到当前题。
+
 ## 安装
 
 在 [Releases](https://github.com/hua-yi-yi/subjective-practice/releases/latest) 下载 APK，使用 Android 6.0 或更高版本的设备安装。
